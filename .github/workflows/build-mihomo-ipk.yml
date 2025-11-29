@@ -86,7 +86,7 @@ Depends: libc, libustream-ssl, ca-bundle"
           mv "$FINAL_IPK_NAME" ../
           cd ..
 
-      - name: Upload IPK Artifact.
+      - name: Upload IPK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: mihomo-ipk-${{ env.MIHOMO_VERSION }}
