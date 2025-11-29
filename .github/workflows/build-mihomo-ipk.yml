@@ -1,0 +1,94 @@
+name: Build Mihomo IPK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build_ipk:
+    env:
+      TARGET_ARCH: aarch64_cortex-a53
+      OPENWRT_VERSION: 24.10
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Prepare prerequisites for packaging
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y upx wget tar gzip jq
+
+      - name: Prepare UPX Compressed Mihomo
+        id: download_mihomo
+        run: |
+          LATEST_RELEASE_URL=$(curl -sL https://api.github.com/repos/MetaCubeX/mihomo/releases/latest | jq -r ".assets[] | select(.name | contains(\"linux-${{ env.TARGET_ARCH }}\") and endswith(\".gz\")) | .browser_download_url")
+
+          if [ -z "$LATEST_RELEASE_URL" ]; then
+            echo "::error::Could not find mihomo asset for linux-${{ env.TARGET_ARCH }}"
+            exit 1
+          fi
+
+          MIHOMO_VERSION=$(echo "$LATEST_RELEASE_URL" | grep -oP 'v\d+\.\d+\.\d+' | tr -d 'v')
+          echo "MIHOMO_VERSION=$MIHOMO_VERSION" >> $GITHUB_ENV
+
+          DOWNLOAD_DIR="mihomo_download"
+          mkdir -p $DOWNLOAD_DIR
+          wget -qO - "$LATEST_RELEASE_URL" | tar -xzf - -C "$DOWNLOAD_DIR"
+
+          MIHOMO_EXECUTABLE=$(find "$DOWNLOAD_DIR" -type f -executable -print0 | xargs -0 du -b | sort -nr | head -n 1 | awk '{print $2}')
+
+          if [ -z "$MIHOMO_EXECUTABLE" ]; then
+            echo "::error::Could not find main mihomo executable after extraction."
+            exit 1
+          fi
+
+          upx --best --lzma "$MIHOMO_EXECUTABLE"
+
+          echo "MIHOMO_PATH=$MIHOMO_EXECUTABLE" >> $GITHUB_ENV
+
+      - name: Wrap-up .ipk pkg
+        run: |
+          PKG_NAME="mihomo"
+          PKG_VERSION="${{ env.MIHOMO_VERSION }}"
+          PKG_ARCH="${{ env.TARGET_ARCH }}"
+          PKG_RELEASE="1"
+
+          PACKAGE_DIR="${PKG_NAME}-package"
+          mkdir -p "$PACKAGE_DIR/control"
+          mkdir -p "$PACKAGE_DIR/usr/bin"
+
+          cp "${{ env.MIHOMO_PATH }}" "$PACKAGE_DIR/usr/bin/mihomo"
+
+          CONTROL_CONTENT="Package: $PKG_NAME
+Version: $PKG_VERSION-$PKG_RELEASE
+Architecture: $PKG_ARCH
+Maintainer: GX Henry <106860621+RealHenryGX@users.noreply.github.com>
+Section: net
+Priority: optional
+Description: Mihomo core executable for OpenWrt, compressed with UPX.
+Depends: libc, libustream-ssl, ca-bundle"
+
+          echo "$CONTROL_CONTENT" > "$PACKAGE_DIR/control/control"
+
+          cd "$PACKAGE_DIR"
+          tar -czf data.tar.gz usr/
+          tar -czf control.tar.gz control/
+          echo "2.0" > debian-binary
+
+          FINAL_IPK_NAME="${PKG_NAME}_${PKG_VERSION}-${PKG_RELEASE}_${PKG_ARCH}.ipk"
+          tar -czf "$FINAL_IPK_NAME" debian-binary control.tar.gz data.tar.gz
+
+          mv "$FINAL_IPK_NAME" ../
+          cd ..
+
+      - name: Upload IPK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mihomo-ipk-${{ env.MIHOMO_VERSION }}
+          path: mihomo_*.ipk
+          retention-days: 7
